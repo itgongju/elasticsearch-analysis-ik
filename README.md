@@ -1,21 +1,45 @@
-IK Analysis for Elasticsearch
-=============================
+1. 扩展词典
+IK 提供了配置文件 IKAnalyzer.cfg.xml，可以用来配置自己的扩展词典和远程扩展词典，都可以配置多个。
 
-The IK Analysis plugin integrates Lucene IK analyzer (http://code.google.com/p/ik-analyzer/) into elasticsearch, support customized dictionary.
+配置完扩展词典和远程扩展词典都需要重启ES，后续对词典进行更新的话，扩展词典的话需要重启ES，远程扩展词典配置完后支持热更新，每60秒检查更新。两个扩展词典都是添加到 IK 的主词典中，对所有索引生效。
 
-Analyzer: `ik_smart` , `ik_max_word` , Tokenizer: `ik_smart` , `ik_max_word`
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE properties SYSTEM "http://java.sun.com/dtd/properties.dtd">
+<properties>
+	<comment>IK Analyzer 扩展配置</comment>
+	<!--用户可以在这里配置自己的扩展字典 -->
+	<entry key="ext_dict">my_ik.dic</entry>
+	 <!--用户可以在这里配置自己的扩展停止词字典-->
+	<entry key="ext_stopwords"></entry>
+	<!--用户可以在这里配置远程扩展字典 -->
+	<entry key="remote_ext_dict">http://localhost:8000/dic/remote.dic</entry>
+	<!--用户可以在这里配置远程扩展停止词字典-->
+	<!-- <entry key="remote_ext_stopwords">words_location</entry> -->
+</properties>
 
-修改说明
---------
-参考( https://github.com/PeterMen/elasticsearch-analysis-ik )。
+远程扩展词典可使用 Nginx，修改 conf/nginx.conf 配置，再在 Nginx 安装目录下创建文件夹 dic，在里面放置远程词典。
 
-该分支版本为7.7.1，7.X修改`pom.xml`中`elasticsearch.version`中版本号重新打包，修改的代码都添加了 **TODO** 标识。
+server {
+    listen       8000;
+    server_name  localhost;
+    
+    # IK 远程扩展词典
+    location /dic {
+        alias dic;
+    }
+}
 
-1.原本在IK中，所有索引共用一个词典，热更新词库也是对所有的索引有效。
+2. 隔离词典
+IK 有个词典类 Dictionary，默认有三个词典：主词典 _MainDict、量词词典 _QuantifierDict 和停顿词典 _StopWords。在分词时，主要通过主词典进行分词匹配，分完的词在停顿词典中，就抛弃。IK 默认是在配置的时候，就初始化该词典类了，将词典文件加载到内存中。如果配置了远程词典，会在线程池中创建检查更新的任务，实现词典的热更新。远程扩展词典添加到主词典，远程扩展停顿词典添加到停顿词典。
 
-2.修改后，在保证原有功能不变的同时，可在定义分词器时设置词典url来获取词典，实现不同索引使用不同的词典，然后在查询时进行干预。
+在 ES 中使用时，IK 使用的都是同一个词典类，即默认那三个词典。如果要实现自定义分词，可以使用远程词典，远程词典都会加到原词典中，对所有的索引都生效。如果要实现索引间不同的分词需求，就需要对词库进行隔离。
 
-```
+所以可以在词典类 Dictionary 中可以添加一个新的词典，考虑到索引间不同的分词需求，存在词典间隔离，使用 Map 存储不同的词典。在创建索引的配置中，添加配置项，指定需要使用的词典。再创建相应的检查更新的任务，实现热更新。在分词时，在主词典的匹配方法中，前置添加对新词典的匹配，实现干预。
+
+修改后源码见 GitHub shpunishment/elasticsearch-analysis-ik
+
+在定义分词器时设置词典url来获取词典，实现不同索引使用不同的词典，然后在查询时进行干预。
+
 PUT ik_test_1
 {
   "settings": {
@@ -34,291 +58,3 @@ PUT ik_test_1
     }
   }
 }
-```
-
-3.配置完词典url后，添加词典监控线程到线程池中，然后60秒请求一次，检查是否需要重新加载词典。
-
-4.词典url要求：GET，有个非必填参数`modifyTime`，字符串，格式为`yyyy-MM-dd HH:mm:ss`。
-
-5.词典url实现：没有参数`modifyTime`，返回全量词典；当有参数`modifyTime`，检查是否有新的词典，有的话返回全量词典。
-
-6.不带参数返回结果：
-
-```
-{
-    "data": {
-        "list": [
-            "美媒",
-            "曝光",
-            "特朗普",
-            "离任后第一天"
-        ],
-        "modifyTime": "2021-01-21 10:58:33"
-    }
-}
-```
-
-7.无需更新返回结果：
-
-```
-{
-    "data": null
-}
-```
-
-8.当然词典url可以使用像远程扩展词典里配置的地址，可根据自身需求再进行修改。
-
-Versions
---------
-
-IK version | ES version
------------|-----------
-master | 7.x -> master
-6.x| 6.x
-5.x| 5.x
-1.10.6 | 2.4.6
-1.9.5 | 2.3.5
-1.8.1 | 2.2.1
-1.7.0 | 2.1.1
-1.5.0 | 2.0.0
-1.2.6 | 1.0.0
-1.2.5 | 0.90.x
-1.1.3 | 0.20.x
-1.0.0 | 0.16.2 -> 0.19.0
-
-Install
--------
-
-1.download or compile
-
-* optional 1 - download pre-build package from here: https://github.com/medcl/elasticsearch-analysis-ik/releases
-
-    create plugin folder `cd your-es-root/plugins/ && mkdir ik`
-    
-    unzip plugin to folder `your-es-root/plugins/ik`
-
-* optional 2 - use elasticsearch-plugin to install ( supported from version v5.5.1 ):
-
-    ```
-    ./bin/elasticsearch-plugin install https://github.com/medcl/elasticsearch-analysis-ik/releases/download/v6.3.0/elasticsearch-analysis-ik-6.3.0.zip
-    ```
-
-   NOTE: replace `6.3.0` to your own elasticsearch version
-
-2.restart elasticsearch
-
-
-
-#### Quick Example
-
-1.create a index
-
-```bash
-curl -XPUT http://localhost:9200/index
-```
-
-2.create a mapping
-
-```bash
-curl -XPOST http://localhost:9200/index/_mapping -H 'Content-Type:application/json' -d'
-{
-        "properties": {
-            "content": {
-                "type": "text",
-                "analyzer": "ik_max_word",
-                "search_analyzer": "ik_smart"
-            }
-        }
-
-}'
-```
-
-3.index some docs
-
-```bash
-curl -XPOST http://localhost:9200/index/_create/1 -H 'Content-Type:application/json' -d'
-{"content":"美国留给伊拉克的是个烂摊子吗"}
-'
-```
-
-```bash
-curl -XPOST http://localhost:9200/index/_create/2 -H 'Content-Type:application/json' -d'
-{"content":"公安部：各地校车将享最高路权"}
-'
-```
-
-```bash
-curl -XPOST http://localhost:9200/index/_create/3 -H 'Content-Type:application/json' -d'
-{"content":"中韩渔警冲突调查：韩警平均每天扣1艘中国渔船"}
-'
-```
-
-```bash
-curl -XPOST http://localhost:9200/index/_create/4 -H 'Content-Type:application/json' -d'
-{"content":"中国驻洛杉矶领事馆遭亚裔男子枪击 嫌犯已自首"}
-'
-```
-
-4.query with highlighting
-
-```bash
-curl -XPOST http://localhost:9200/index/_search  -H 'Content-Type:application/json' -d'
-{
-    "query" : { "match" : { "content" : "中国" }},
-    "highlight" : {
-        "pre_tags" : ["<tag1>", "<tag2>"],
-        "post_tags" : ["</tag1>", "</tag2>"],
-        "fields" : {
-            "content" : {}
-        }
-    }
-}
-'
-```
-
-Result
-
-```json
-{
-    "took": 14,
-    "timed_out": false,
-    "_shards": {
-        "total": 5,
-        "successful": 5,
-        "failed": 0
-    },
-    "hits": {
-        "total": 2,
-        "max_score": 2,
-        "hits": [
-            {
-                "_index": "index",
-                "_type": "fulltext",
-                "_id": "4",
-                "_score": 2,
-                "_source": {
-                    "content": "中国驻洛杉矶领事馆遭亚裔男子枪击 嫌犯已自首"
-                },
-                "highlight": {
-                    "content": [
-                        "<tag1>中国</tag1>驻洛杉矶领事馆遭亚裔男子枪击 嫌犯已自首 "
-                    ]
-                }
-            },
-            {
-                "_index": "index",
-                "_type": "fulltext",
-                "_id": "3",
-                "_score": 2,
-                "_source": {
-                    "content": "中韩渔警冲突调查：韩警平均每天扣1艘中国渔船"
-                },
-                "highlight": {
-                    "content": [
-                        "均每天扣1艘<tag1>中国</tag1>渔船 "
-                    ]
-                }
-            }
-        ]
-    }
-}
-```
-
-### Dictionary Configuration
-
-`IKAnalyzer.cfg.xml` can be located at `{conf}/analysis-ik/config/IKAnalyzer.cfg.xml`
-or `{plugins}/elasticsearch-analysis-ik-*/config/IKAnalyzer.cfg.xml`
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE properties SYSTEM "http://java.sun.com/dtd/properties.dtd">
-<properties>
-	<comment>IK Analyzer 扩展配置</comment>
-	<!--用户可以在这里配置自己的扩展字典 -->
-	<entry key="ext_dict">custom/mydict.dic;custom/single_word_low_freq.dic</entry>
-	 <!--用户可以在这里配置自己的扩展停止词字典-->
-	<entry key="ext_stopwords">custom/ext_stopword.dic</entry>
- 	<!--用户可以在这里配置远程扩展字典 -->
-	<entry key="remote_ext_dict">location</entry>
- 	<!--用户可以在这里配置远程扩展停止词字典-->
-	<entry key="remote_ext_stopwords">http://xxx.com/xxx.dic</entry>
-</properties>
-```
-
-### 热更新 IK 分词使用方法
-
-目前该插件支持热更新 IK 分词，通过上文在 IK 配置文件中提到的如下配置
-
-```xml
- 	<!--用户可以在这里配置远程扩展字典 -->
-	<entry key="remote_ext_dict">location</entry>
- 	<!--用户可以在这里配置远程扩展停止词字典-->
-	<entry key="remote_ext_stopwords">location</entry>
-```
-
-其中 `location` 是指一个 url，比如 `http://yoursite.com/getCustomDict`，该请求只需满足以下两点即可完成分词热更新。
-
-1. 该 http 请求需要返回两个头部(header)，一个是 `Last-Modified`，一个是 `ETag`，这两者都是字符串类型，只要有一个发生变化，该插件就会去抓取新的分词进而更新词库。
-
-2. 该 http 请求返回的内容格式是一行一个分词，换行符用 `\n` 即可。
-
-满足上面两点要求就可以实现热更新分词了，不需要重启 ES 实例。
-
-可以将需自动更新的热词放在一个 UTF-8 编码的 .txt 文件里，放在 nginx 或其他简易 http server 下，当 .txt 文件修改时，http server 会在客户端请求该文件时自动返回相应的 Last-Modified 和 ETag。可以另外做一个工具来从业务系统提取相关词汇，并更新这个 .txt 文件。
-
-have fun.
-
-常见问题
--------
-
-1.自定义词典为什么没有生效？
-
-请确保你的扩展词典的文本格式为 UTF8 编码
-
-2.如何手动安装？
-
-
-```bash
-git clone https://github.com/medcl/elasticsearch-analysis-ik
-cd elasticsearch-analysis-ik
-git checkout tags/{version}
-mvn clean
-mvn compile
-mvn package
-```
-
-拷贝和解压release下的文件: #{project_path}/elasticsearch-analysis-ik/target/releases/elasticsearch-analysis-ik-*.zip 到你的 elasticsearch 插件目录, 如: plugins/ik
-重启elasticsearch
-
-3.分词测试失败
-请在某个索引下调用analyze接口测试,而不是直接调用analyze接口
-如:
-```bash
-curl -XGET "http://localhost:9200/your_index/_analyze" -H 'Content-Type: application/json' -d'
-{
-   "text":"中华人民共和国MN","tokenizer": "my_ik"
-}'
-```
-
-
-4. ik_max_word 和 ik_smart 什么区别?
-
-
-ik_max_word: 会将文本做最细粒度的拆分，比如会将“中华人民共和国国歌”拆分为“中华人民共和国,中华人民,中华,华人,人民共和国,人民,人,民,共和国,共和,和,国国,国歌”，会穷尽各种可能的组合，适合 Term Query；
-
-ik_smart: 会做最粗粒度的拆分，比如会将“中华人民共和国国歌”拆分为“中华人民共和国,国歌”，适合 Phrase 查询。
-
-Changes
-------
-*自 v5.0.0 起*
-
-- 移除名为 `ik` 的analyzer和tokenizer,请分别使用 `ik_smart` 和 `ik_max_word`
-
-
-Thanks
-------
-YourKit supports IK Analysis for ElasticSearch project with its full-featured Java Profiler.
-YourKit, LLC is the creator of innovative and intelligent tools for profiling
-Java and .NET applications. Take a look at YourKit's leading software products:
-<a href="http://www.yourkit.com/java/profiler/index.jsp">YourKit Java Profiler</a> and
-<a href="http://www.yourkit.com/.net/profiler/index.jsp">YourKit .NET Profiler</a>.
